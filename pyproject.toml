@@ -1,12 +1,13 @@
 [tool.poetry]
-name = "movie-app"
+name = "movie"
 version = "0.1.0"
 description = ""
-authors = ["Dr1DeX"]
+authors = ["nesterov-art <nesterov-art@yandex-team.ru>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
+requests = "^2.31.0"
 
 
 [build-system]
