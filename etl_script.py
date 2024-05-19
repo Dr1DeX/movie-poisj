@@ -4,6 +4,11 @@ import sqlite3
 from contextlib import contextmanager
 from typing import List
 from urllib.parse import urljoin
+from ssl import create_default_context
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+context = create_default_context(cafile="http_ca.crt")
 
 import requests
 
@@ -22,12 +27,12 @@ def conn_context(db_path: str):
     conn = sqlite3.connect(db_path)
     conn.row_factory = dict_factory
     yield conn
-    conn.close()
 
 
 class ESLoader:
-    def __init__(self, url: str):
+    def __init__(self, url: str, username, password):
         self.url = url
+        self.auth = (username, password)
 
     def __get_es_build_query(self, rows: List[dict], idx_name: str) -> List[str]:
         prepared_query = []
@@ -45,30 +50,31 @@ class ESLoader:
         response = requests.post(
             urljoin(self.url, '_bulk'),
             data=str_query,
-            headers={'Content-Type': 'application/x-ndjson'}
-        )
+            headers={'Content-Type': 'application/x-ndjson'},
+            auth=self.auth,
+            timeout=30,
+            verify=False
 
-        json_response = json.load(response.content.decode())
-        for item in json_response['items']:
-            error_message = item['index'].get('error')
-            if error_message:
-                logger.error(error_message)
+        )
+        print(response)
+        json_response = json.loads(response.content.decode())
+        print(json_response)
 
 
 class ETL:
     SQL = """
     WITH x as (
-        SELECT m.id, group_concat(a.id) as actors_idx, group_concat(a.name) as actors_name
-        FROM movies m
-            LEFT JOIN movie_actors ma on m.id = ma.movie_id
-            LEFT JOIN actors on ma.actor_id = a.id
-        GROUP BY m.id
+    SELECT m.id, group_concat(a.id) as actors_ids, group_concat(a.name) as actors_names
+    FROM movies m
+    LEFT JOIN movie_actors ma on m.id = ma.movie_id
+    LEFT JOIN actors a on ma.actor_id = a.id
+    GROUP BY m.id
     )
-    SELECT m.id, genre, director, title, plot, imdb_rating, x.actors_idx, x.actors_name,
+    SELECT m.id, genre, director, title, plot, imdb_rating, x.actors_ids, x.actors_names,
     CASE
-        WHEN m.writers = '' THEN '[{"id": "' || m.writer || '"}]'
-        ELSE m.writers
-        END AS writers
+    WHEN m.writers = '' THEN '[{"id": "' || m.writer || '"}]'
+    ELSE m.writers
+    END AS writers
     FROM movies m
     LEFT JOIN x ON m.id = x.id
     """
@@ -94,7 +100,7 @@ class ETL:
                 writers_set.add(writer_id)
         actors = []
         actors_names = []
-        if row['actors_ids'] is not None and row['actors_name'] is not None:
+        if row['actors_ids'] is not None and row['actors_names'] is not None:
             actors = [
                 {'id': _id, 'name': name}
                 for _id, name in zip(row['actors_ids'].split(','), row['actors_names'].split(','))
@@ -126,3 +132,7 @@ class ETL:
         self.es_loader.load_to_es(records=records, idx_name=idx_name)
 
 
+with conn_context('db.sqlite') as conn:
+    es_loader = ESLoader("https://localhost:9200", 'elastic', 'lolahaha12')
+    etl = ETL(conn=conn, es_loader=es_loader)
+    etl.load(idx_name="movies")
